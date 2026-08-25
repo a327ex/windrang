@@ -398,25 +398,31 @@ float pattern_field(int kind, vec2 world_pos, vec2 uv, vec2 quad_px, float scale
 // `sample_uv` = the TEXTURE-SAMPLING uv (atlas coords for sprite quads);
 // `uv` = the QUAD-LOCAL 0..1 uv the LOCAL patterns map over. Identical for SDF
 // draws; they differ only for atlas sprites/glyphs (see the sprite branch).
-float effect_field(vec2 world_pos, vec2 sample_uv, vec2 uv, vec2 quad_px) {
-    // IMAGE-AS-CONTENT (u_image_field == 1): the field is the drawn image's own
-    // luminance (contrast-remapped), optionally rippled by the animated pattern
-    // so the dither flows over time (PATTERN AMT). This routes the image through
-    // the SAME field path as the gallery, so shape/dither/color all apply to it.
-    // Otherwise the field is the pattern (the gallery path, unchanged).
+float field_eval(int driver, float drv_scl, float drv_spd, vec2 world_pos, vec2 sample_uv, vec2 uv, vec2 quad_px) {
+    // ONE pattern_field instantiation. The old shape (effect_field + separate
+    // driver calls) instantiated the whole 11-pattern dispatch at ~18 call
+    // sites once inlining was done, and ANGLE's D3D translation ground on it
+    // for a minute on cache-cold loads. Same math, one site.
+    int   k   = (driver > 0) ? driver  : u_pattern_kind;
+    float scl = (driver > 0) ? drv_scl : u_pattern_scale;
+    float p1  = (driver > 0) ? 0.0     : u_pattern_param;
+    float p2  = (driver > 0) ? 0.0     : u_pattern_param2;
+    float spd = (driver > 0) ? drv_spd : u_pattern_speed;
+    float f = pattern_field(k, world_pos, uv, quad_px, scl, p1, p2, u_time * spd);
+    if (driver > 0) return f;
     if (u_image_field == 1) {
         float lum = dot(textureLod(u_texture, sample_uv, 0.0).rgb, vec3(0.299, 0.587, 0.114));
         lum = clamp((lum - 0.5) * u_pattern_contrast + 0.5, 0.0, 1.0);
         if (u_image_pattern_amount > 0.0) {
-            float pat = pattern_field(u_pattern_kind, world_pos, uv, quad_px, u_pattern_scale,
-                                      u_pattern_param, u_pattern_param2, u_time * u_pattern_speed);
-            lum = clamp(lum + (pat - 0.5) * u_image_pattern_amount, 0.0, 1.0);
+            lum = clamp(lum + (f - 0.5) * u_image_pattern_amount, 0.0, 1.0);
         }
         return lum;
     }
-    float f = pattern_field(u_pattern_kind, world_pos, uv, quad_px, u_pattern_scale,
-                            u_pattern_param, u_pattern_param2, u_time * u_pattern_speed);
     return clamp((f - 0.5) * u_pattern_contrast + 0.5, 0.0, 1.0);
+}
+
+float effect_field(vec2 world_pos, vec2 sample_uv, vec2 uv, vec2 quad_px) {
+    return field_eval(0, 0.0, 0.0, world_pos, sample_uv, uv, quad_px);
 }
 
 // =============================================================================
@@ -665,13 +671,7 @@ vec3 apply_deco_layer(int idx, vec3 base, vec2 sample_uv, vec2 uv, vec2 quad_px)
     vec2 wc   = vPos + dFdx(vPos) * dpx.x + dFdy(vPos) * dpx.y;
     vec2 suvc = sample_uv + dFdx(sample_uv) * dpx.x + dFdy(sample_uv) * dpx.y;
     vec2 uvc  = uv + dFdx(uv) * dpx.x + dFdy(uv) * dpx.y;
-    float g;
-    if (driver > 0) {
-        g = pattern_field(driver, wc, uvc, quad_px,
-                          drv_scl, 0.0, 0.0, u_time * drv_spd);
-    } else {
-        g = effect_field(wc, suvc, uvc, quad_px);   // the draw's main pattern
-    }
+    float g = field_eval(driver, drv_scl, drv_spd, wc, suvc, uvc, quad_px);
 
     float size_px = dsize * mix(1.0, g, size_var);
     if (size_px < 0.5) return base;
@@ -731,13 +731,7 @@ vec3 apply_deco_layer(int idx, vec3 base, vec2 sample_uv, vec2 uv, vec2 quad_px)
     } else if (cmode == 4) {
         // flow: the driver field at the FRAGMENT — shapes as windows onto
         // one continuous gradient.
-        float gf;
-        if (driver > 0) {
-            gf = pattern_field(driver, vPos, uv, quad_px,
-                               drv_scl, 0.0, 0.0, u_time * drv_spd);
-        } else {
-            gf = effect_field(vPos, sample_uv, uv, quad_px);
-        }
+        float gf = field_eval(driver, drv_scl, drv_spd, vPos, sample_uv, uv, quad_px);
         dcol = mix(u_palette[tok_a].rgb, u_palette[tok_b].rgb, clamp(gf, 0.0, 1.0));
     } else {
         dcol = clamp(base * (1.0 + shade), 0.0, 1.0);   // shade-of-base
@@ -788,6 +782,11 @@ void main() {
     float stroke = 0.0;
     vec2 quad_px = vec2(1.0);   // quad pixel size, for local (rect-relative) patterns
 
+    // shared-tail inputs (set by the sprite branch directly; by the shape
+    // post-processing below for every SDF type)
+    vec3 s_col = vec3(0.0); vec2 s_suv = vUV; vec2 s_uv = vUV; vec2 s_qpx = vec2(1.0);
+    float s_alpha = 1.0; float alpha = 1.0; bool is_shape = true;
+
     if (vType < 0.5) {
         // Rectangle
         vec2 quad_size = vShape0.xy;
@@ -829,20 +828,11 @@ void main() {
             quad_uv = (vUV - uv0) / (uv1 - uv0);
             spr_quad_px = (uv1 - uv0) * vec2(texSize);
         }
-        if (u_color_kind > 0) {
-            // The field comes from effect_field (the image's own luminance when
-            // u_image_field is set — optionally rippled by the moving pattern —
-            // else the pattern) and flows through dither + the color recipe.
-            float f  = effect_field(vPos, vUV, quad_uv, spr_quad_px);
-            float fd = apply_dither(f, u_dither_kind, gl_FragCoord.xy);
-            col = apply_color(u_color_kind, col, fd, u_palette[u_color_a].rgb, u_palette[u_color_b].rgb);
-        }
-        // Deco composites over whatever the base is (recolored or raw image).
-        // With driver 0 + u_image_field set, deco shapes are SIZED by the
-        // image's own luminance — dot-halftone of a real image.
-        col = apply_deco(col, vUV, quad_uv, spr_quad_px);
-        FragColor = vec4(col * ((u_value_mult > 0.0) ? u_value_mult : 1.0), sprite_alpha);
-        return;
+        // fall through to the ONE shared field/dither/color/deco tail below —
+        // a second inlined copy of that tail used to double the whole
+        // shader's compile cost
+        s_col = col; s_suv = vUV; s_uv = quad_uv; s_qpx = spr_quad_px; s_alpha = sprite_alpha;
+        is_shape = false;
     } else if (vType < 3.5) {
         // Line / capsule
         vec2 quad_size = vShape0.xy;
@@ -892,31 +882,35 @@ void main() {
         discard;
     }
 
-    if (stroke > 0.0) {
-        d = abs(d) - stroke * 0.5;
+    if (is_shape) {
+        if (stroke > 0.0) {
+            d = abs(d) - stroke * 0.5;
+        }
+        if (u_aa_width > 0.0) {
+            alpha = 1.0 - smoothstep(-u_aa_width, u_aa_width, d);
+        } else {
+            alpha = 1.0 - step(0.0, d);
+        }
+        if (alpha <= 0.0) discard;
+        s_col = vColor.rgb + vAddColor;
+        s_suv = vUV; s_uv = vUV; s_qpx = quad_px;
+        s_alpha = vColor.a * alpha;
     }
 
-    float alpha;
-    if (u_aa_width > 0.0) {
-        alpha = 1.0 - smoothstep(-u_aa_width, u_aa_width, d);
-    } else {
-        alpha = 1.0 - step(0.0, d);
-    }
-    if (alpha <= 0.0) discard;
-
-    vec3 col = vColor.rgb + vAddColor;
+    // THE shared tail (single inlined instance of field/dither/color/deco).
     // Field computed under the uniform `u_color_kind` test (NOT the per-fragment
     // `alpha` test) so effect_field's callers' dFdx/dFdy stay in uniform
     // control flow.
+    vec3 col = s_col;
     if (u_color_kind > 0) {
-        float f  = effect_field(vPos, vUV, vUV, quad_px);
+        float f  = effect_field(vPos, s_suv, s_uv, s_qpx);
         float fd = apply_dither(f, u_dither_kind, gl_FragCoord.xy);
         vec3 ccol = apply_color(u_color_kind, col, fd, u_palette[u_color_a].rgb, u_palette[u_color_b].rgb);
         if (alpha > 0.01) col = ccol;
     }
     // Deco composites over the base — INDEPENDENT of the color recipe, so a
     // flat vColor rect takes deco too (the decorated-background case).
-    col = apply_deco(col, vUV, vUV, quad_px);
+    col = apply_deco(col, s_suv, s_uv, s_qpx);
 
-    FragColor = vec4(col * ((u_value_mult > 0.0) ? u_value_mult : 1.0), vColor.a * alpha);
+    FragColor = vec4(col * ((u_value_mult > 0.0) ? u_value_mult : 1.0), s_alpha);
 }
