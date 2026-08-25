@@ -1,0 +1,8 @@
+# engine binaries — copies of Anchor3/engine/build/ (re-copy on engine updates;
+# avcodec alone is 63MB and all are rebuildable)
+anchor.exe
+*.dll
+
+# presentation-stream recordings (large; archive is the site vault)
+replays/
+render/
