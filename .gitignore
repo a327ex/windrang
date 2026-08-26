@@ -1,4 +1,4 @@
-# engine binaries — copies of Anchor3/engine/build/ (re-copy on engine updates;
+# engine binaries — copies of Anchor/engine/engine/build/ (re-copy on engine updates;
 # avcodec alone is 63MB and all are rebuildable)
 anchor.exe
 *.dll
