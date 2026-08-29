@@ -28,7 +28,7 @@ JUMP_CUT_VY     = -65
 GRAVITY_Y       = 685
 HARD_LAND_VY    = 200
 
-SQUASH          = 1.8
+SQUASH          = 1.2    -- landing squash; 1.8 was hop-speed, too much at roll speeds
 
 HOP_T         = 2*(-HOP_VY)/GRAVITY_Y
 HOP_L         = MOVE_MAX_V*HOP_T
@@ -44,7 +44,7 @@ ROLL_AIR_ACCEL   = 360   -- air x motor
 ROLL_FLOAT_ACCEL = 370   -- air y vs gravity while holding up
 ROLL_AIR_SMOOTH  = 0.15  -- seconds to cover 90% of an air-thrust change
 ROLL_FRICTION    = 0.40  -- low so a fall onto a downhill keeps its tangent speed
-ROLL_RESTITUTION = 0.25  -- Box2D bounce on land; mix is max(player, terrain)
+ROLL_RESTITUTION = 0.45  -- Box2D bounce on land; mix is max(player, terrain)
 ROLL_JUMP_VY     = -200  -- roll jump impulse (hop still uses JUMP_VY)
 
 -- -----------------------------------------------------------------------------
@@ -380,9 +380,9 @@ function player:update(dt)
   end
 
   if self.grounded and not was_grounded and self.air_t > 0.04 then
-    local impact = math.max(vy, self.last_vy)
-    spring_pull(self.spring, 'squash_x', math.remap(impact, 0, 1000, 0, 1)*SQUASH,    6, 0.45)
-    spring_pull(self.spring, 'squash_y', math.remap(impact, 0, 1000, -0.2, 0)*SQUASH, 6, 0.45)
+    local impact = math.clamp(math.max(vy, self.last_vy), 0, 1400)
+    spring_pull(self.spring, 'squash_x', math.remap(impact, 0, 1400, 0, 1)*SQUASH,    6, 0.35)
+    spring_pull(self.spring, 'squash_y', math.remap(impact, 0, 1400, -0.2, 0)*SQUASH, 6, 0.35)
     if self.mode == 'hop' then
       timer_tween(self.timer, 0.05, 'rot_snap', self,
                   { visual_r = math.snap(self.visual_r, 2*math.pi) }, math.linear,
