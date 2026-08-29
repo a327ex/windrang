@@ -280,7 +280,6 @@ function player:new(x, y)
   hitfx_init(self)
   self.collider = collider(self, 'player', 'dynamic', 'circle', PLAYER_RADIUS)
   self.collider:set_position(x, y)
-  self.collider:set_restitution(0)  -- hop stays 0; roll applies ROLL_RESTITUTION
   self.mode = 'roll'
   self:reset_state()
   self:set_mode('roll')
