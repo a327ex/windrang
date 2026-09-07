@@ -28,7 +28,7 @@ JUMP_CUT_VY     = -65
 GRAVITY_Y       = 685
 HARD_LAND_VY    = 200
 
-SQUASH          = 1.8
+SQUASH          = 1.2    -- landing squash; 1.8 was hop-speed, too much at roll speeds
 
 HOP_T         = 2*(-HOP_VY)/GRAVITY_Y
 HOP_L         = MOVE_MAX_V*HOP_T
@@ -44,6 +44,7 @@ ROLL_AIR_ACCEL   = 360   -- air x motor
 ROLL_FLOAT_ACCEL = 370   -- air y vs gravity while holding up
 ROLL_AIR_SMOOTH  = 0.15  -- seconds to cover 90% of an air-thrust change
 ROLL_FRICTION    = 0.40  -- low so a fall onto a downhill keeps its tangent speed
+ROLL_RESTITUTION = 0.45  -- Box2D bounce on land; mix is max(player, terrain)
 ROLL_JUMP_VY     = -200  -- roll jump impulse (hop still uses JUMP_VY)
 
 -- -----------------------------------------------------------------------------
@@ -279,7 +280,6 @@ function player:new(x, y)
   hitfx_init(self)
   self.collider = collider(self, 'player', 'dynamic', 'circle', PLAYER_RADIUS)
   self.collider:set_position(x, y)
-  self.collider:set_restitution(0)
   self.mode = 'roll'
   self:reset_state()
   self:set_mode('roll')
@@ -311,6 +311,7 @@ function player:set_mode(mode)
   if mode == 'roll' then
     self.collider:set_fixed_rotation(false)
     self.collider:set_friction(ROLL_FRICTION)
+    self.collider:set_restitution(ROLL_RESTITUTION)
     self.collider:set_gravity_scale(1)
     self.collider:set_linear_damping(0)
     self.collider:set_angular_damping(0)
@@ -319,6 +320,7 @@ function player:set_mode(mode)
   else
     self.collider:set_fixed_rotation(true)
     self.collider:set_friction(0)
+    self.collider:set_restitution(0)
     self.collider:set_angular_velocity(0)
     self.collider:set_angle(0)
     self.visual_r = 0
@@ -378,9 +380,9 @@ function player:update(dt)
   end
 
   if self.grounded and not was_grounded and self.air_t > 0.04 then
-    local impact = math.max(vy, self.last_vy)
-    spring_pull(self.spring, 'squash_x', math.remap(impact, 0, 1000, 0, 1)*SQUASH,    6, 0.45)
-    spring_pull(self.spring, 'squash_y', math.remap(impact, 0, 1000, -0.2, 0)*SQUASH, 6, 0.45)
+    local impact = math.clamp(math.max(vy, self.last_vy), 0, 1400)
+    spring_pull(self.spring, 'squash_x', math.remap(impact, 0, 1400, 0, 1)*SQUASH,    6, 0.35)
+    spring_pull(self.spring, 'squash_y', math.remap(impact, 0, 1400, -0.2, 0)*SQUASH, 6, 0.35)
     if self.mode == 'hop' then
       timer_tween(self.timer, 0.05, 'rot_snap', self,
                   { visual_r = math.snap(self.visual_r, 2*math.pi) }, math.linear,
@@ -564,6 +566,7 @@ TWEAKS = {
   { 'ROLL_FLOAT_ACCEL',  0,   800, '%.0f', 'r.float'  },
   { 'ROLL_AIR_SMOOTH', 0.05,  1.2, '%.2f', 'r.smooth' },
   { 'ROLL_FRICTION',     0,   1.5, '%.2f', 'r.frict'  },
+  { 'ROLL_RESTITUTION',  0,     1, '%.2f', 'r.bounce' },
   { 'ROLL_JUMP_VY',   -400,   -40, '%.0f', 'r.jump'   },
   { 'GRAVITY_Y',       200,  1200, '%.0f', 'gravity'  },
   { 'JUMP_VY',        -500,  -80,  '%.0f', 'h.jump'   },
@@ -594,7 +597,10 @@ function tweak_update(dt)
   physics_set_gravity(0, GRAVITY_Y)
   HOP_T = 2*(-HOP_VY)/GRAVITY_Y
   HOP_L = MOVE_MAX_V*HOP_T
-  if p1 and p1.collider then p1.collider:set_friction(ROLL_FRICTION) end
+  if p1 and p1.collider then
+    p1.collider:set_friction(ROLL_FRICTION)
+    if p1.mode == 'roll' then p1.collider:set_restitution(ROLL_RESTITUTION) end
+  end
   if terrain and terrain.collider then
     terrain.collider:set_friction(ROLL_FRICTION, terrain.collider.chain)
   end
